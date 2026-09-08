@@ -11,6 +11,29 @@
 
 
 static int parseModule(Umka *umka);
+static const Type *parseTypeRecursive(Umka *umka, int depth);
+
+
+static const Type *parseTypeOrForwardType(Umka *umka, bool resolveByStructured, int depth)
+{
+    // Forward declaration?
+    if (umka->types.forwardTypesEnabled && umka->lex.tok.kind == TOK_IDENT)
+    {
+        Lexer lookaheadLex = umka->lex;
+        lexNext(&lookaheadLex);
+        if (lookaheadLex.tok.kind != TOK_COLONCOLON && !identFind(&umka->idents, &umka->modules, &umka->blocks, umka->blocks.module, umka->lex.tok.name, NULL, true))
+        {
+            Type *forwardType = typeAdd(&umka->types, &umka->blocks, TYPE_FORWARD);
+            forwardType->typeIdent = identAddType(&umka->idents, &umka->modules, &umka->blocks, umka->lex.tok.name, forwardType, false);
+            forwardType->resolveByStructured = resolveByStructured;
+            identSetUsed(forwardType->typeIdent);
+            lexNext(&umka->lex);
+            return forwardType;
+        }
+    }
+
+    return parseTypeRecursive(umka, depth);
+}
 
 
 // exportMark = ["*"].
@@ -48,29 +71,38 @@ static void parseIdentList(Umka *umka, IdentName *names, bool *exported, int cap
 }
 
 
-// typedIdentList = identList ":" [".."] type.
-static void parseTypedIdentList(Umka *umka, IdentName *names, bool *exported, int capacity, int *num, const Type **type, bool allowVariadicParamList)
+// typedIdentList = identList ":" type.
+static void parseTypedIdentList(Umka *umka, IdentName *names, bool *exported, int capacity, int *num, const Type **type, int depth)
+{
+    parseIdentList(umka, names, exported, capacity, num);
+    lexEat(&umka->lex, TOK_COLON);
+    *type = parseTypeRecursive(umka, depth + 1);
+}
+
+
+// typedParamList = identList ":" [".."] type.
+static void parseTypedParamList(Umka *umka, IdentName *names, bool *exported, int capacity, int *num, const Type **type, int depth)
 {
     parseIdentList(umka, names, exported, capacity, num);
     lexEat(&umka->lex, TOK_COLON);
 
-    if (allowVariadicParamList && umka->lex.tok.kind == TOK_ELLIPSIS)
+    if (umka->lex.tok.kind == TOK_ELLIPSIS)
     {
         if (*num != 1)
             umka->error.handler(umka->error.context, "Only one variadic parameter list is allowed");
 
         lexNext(&umka->lex);
-        const Type *itemType = parseType(umka, NULL);
+        const Type *itemType = parseTypeOrForwardType(umka, false, depth + 1);
         if (itemType->kind == TYPE_VOID)
             umka->error.handler(umka->error.context, "Variadic parameters cannot be void");
 
         Type *variadicListType = typeAdd(&umka->types, &umka->blocks, TYPE_DYNARRAY);
-        variadicListType->base = itemType;
+        typeSetBase(variadicListType, itemType);
         variadicListType->isVariadicParamList = true;
         *type = variadicListType;
     }
     else
-        *type = parseType(umka, NULL);
+        *type = parseTypeOrForwardType(umka, false, depth + 1);
 }
 
 
@@ -84,7 +116,7 @@ static void parseRcvSignature(Umka *umka, Signature *sig)
     strcpy(rcvName, umka->lex.tok.name);
 
     lexEat(&umka->lex, TOK_COLON);
-    const Type *rcvType = parseType(umka, NULL);
+    const Type *rcvType = parseType(umka);
 
     if (rcvType->kind != TYPE_PTR || !rcvType->base->typeIdent)
         umka->error.handler(umka->error.context, "Receiver should be a pointer to a defined type");
@@ -102,12 +134,12 @@ static void parseRcvSignature(Umka *umka, Signature *sig)
 }
 
 
-// signature = "(" [typedIdentList ["=" expr] {"," typedIdentList ["=" expr]}] ")" [":" (type | "(" type {"," type} ")")].
-static void parseSignature(Umka *umka, Signature *sig)
+// signature = "(" [typedParamList ["=" expr] {"," typedParamList ["=" expr]}] ")" [":" (type | "(" type {"," type} ")")].
+static void parseSignature(Umka *umka, Signature *sig, int depth)
 {
     // Dummy hidden parameter that allows any function to be converted to a closure
     if (!sig->isMethod)
-        typeAddParam(&umka->types, sig, umka->anyType, "#upvalues", (Const){0});
+        typeAddParam(&umka->types, sig, umka->types.predecl.anyType, "#upvalues", (Const){0});
 
     // Formal parameter list
     lexEat(&umka->lex, TOK_LPAR);
@@ -125,7 +157,7 @@ static void parseSignature(Umka *umka, Signature *sig)
             bool paramExported[MAX_PARAMS];
             const Type *paramType = NULL;
             int numParams = 0;
-            parseTypedIdentList(umka, paramNames, paramExported, MAX_PARAMS, &numParams, &paramType, true);
+            parseTypedParamList(umka, paramNames, paramExported, MAX_PARAMS, &numParams, &paramType, depth);
 
             variadicParamListFound = paramType->isVariadicParamList;
 
@@ -139,7 +171,10 @@ static void parseSignature(Umka *umka, Signature *sig)
                 if (paramType->isVariadicParamList)
                     umka->error.handler(umka->error.context, "Variadic parameter list cannot have default value");
 
-                if (!typeComparable(paramType) && !typeEquivalent(paramType, umka->anyType))
+                if (paramType->kind == TYPE_FORWARD)
+                    umka->error.handler(umka->error.context, "Parameter of unresolved type cannot have default value");
+
+                if (!typeComparable(paramType) && !typeEquivalent(paramType, umka->types.predecl.anyType))
                     umka->error.handler(umka->error.context, "Parameter must be of comparable or 'any' type to have default value");
                 
                 lexNext(&umka->lex);
@@ -186,7 +221,7 @@ static void parseSignature(Umka *umka, Signature *sig)
 
             while (1)
             {
-                const Type *fieldType = parseType(umka, NULL);
+                const Type *fieldType = parseTypeRecursive(umka, depth + 1);
                 typeAddField(&umka->types, listType, fieldType, NULL);
 
                 if (umka->lex.tok.kind != TOK_COMMA)
@@ -202,57 +237,19 @@ static void parseSignature(Umka *umka, Signature *sig)
         }
         else
             // Single result type
-            sig->resultType = parseType(umka, NULL);
+            sig->resultType = parseTypeOrForwardType(umka, true, depth + 1);
     }
     else
-        sig->resultType = umka->voidType;
+        sig->resultType = umka->types.predecl.voidType;
 
-    // Structured result parameter
-    if (typeStructured(sig->resultType))
+    // Structured result parameter (if it's a forward-declared type, we require it to be resolved by a structured type later)
+    if (typeStructured(sig->resultType) || sig->resultType->kind == TYPE_FORWARD)
         typeAddParam(&umka->types, sig, typeAddPtrTo(&umka->types, &umka->blocks, sig->resultType), "#result", (Const){0});
 }
 
 
-static const Type *parseTypeOrForwardType(Umka *umka)
-{
-    const Type *type = NULL;
-
-    // Forward declaration?
-    bool forward = false;
-    if (umka->types.forwardTypesEnabled && umka->lex.tok.kind == TOK_IDENT)
-    {
-        const Ident *ident = NULL;
-
-        Lexer lookaheadLex = umka->lex;
-        lexNext(&lookaheadLex);
-        if (lookaheadLex.tok.kind == TOK_COLONCOLON)
-            ident = identFindModule(&umka->idents, &umka->modules, &umka->blocks, umka->blocks.module, umka->lex.tok.name, true);
-        else
-            ident = identFind(&umka->idents, &umka->modules, &umka->blocks, umka->blocks.module, umka->lex.tok.name, NULL, true);
-
-        if (!ident)
-        {
-            Type *forwardType = typeAdd(&umka->types, &umka->blocks, TYPE_FORWARD);
-            forwardType->typeIdent = identAddType(&umka->idents, &umka->modules, &umka->blocks, umka->lex.tok.name, forwardType, false);
-            identSetUsed(forwardType->typeIdent);
-
-            lexNext(&umka->lex);
-
-            type = forwardType;
-            forward = true;
-        }
-    }
-
-    // Conventional declaration
-    if (!forward)
-        type = parseType(umka, NULL);
-
-    return type;
-}
-
-
 // ptrType = ["weak"] "^" type.
-static const Type *parsePtrType(Umka *umka)
+static const Type *parsePtrType(Umka *umka, int depth)
 {
     bool weak = false;
     if (umka->lex.tok.kind == TOK_WEAK)
@@ -263,7 +260,7 @@ static const Type *parsePtrType(Umka *umka)
 
     lexEat(&umka->lex, TOK_CARET);
 
-    const Type *baseType = parseTypeOrForwardType(umka);
+    const Type *baseType = parseTypeOrForwardType(umka, false, depth + 1);
 
     if (weak)
         return typeAddWeakPtrTo(&umka->types, &umka->blocks, baseType);
@@ -274,7 +271,7 @@ static const Type *parsePtrType(Umka *umka)
 
 // arrayType = "[" expr "]" type.
 // dynArrayType = "[" "]" type.
-static const Type *parseArrayType(Umka *umka)
+static const Type *parseArrayType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_LBRACKET);
 
@@ -293,32 +290,21 @@ static const Type *parseArrayType(Umka *umka)
         typeKind = TYPE_ARRAY;
         const Type *indexType = NULL;
         parseExpr(umka, &indexType, &len);
-        typeAssertCompatible(&umka->types, umka->intType, indexType);
+        typeAssertCompatible(&umka->types, umka->types.predecl.intType, indexType);
         if (len.intVal < 0 || len.intVal > INT_MAX)
             umka->error.handler(umka->error.context, "Illegal array length");
     }
 
     lexEat(&umka->lex, TOK_RBRACKET);
 
-    const Type *baseType = (typeKind == TYPE_DYNARRAY) ? parseTypeOrForwardType(umka) : parseType(umka, NULL);
+    const Type *baseType = (typeKind == TYPE_DYNARRAY) ? parseTypeOrForwardType(umka, false, depth + 1) : parseTypeRecursive(umka, depth + 1);
     if (baseType->kind == TYPE_VOID)
         umka->error.handler(umka->error.context, "Array items cannot be void");
 
-    if (len.intVal > 0 && typeSize(&umka->types, baseType) > INT_MAX / len.intVal)
-        umka->error.handler(umka->error.context, "Array is too large");
-
     Type *type = typeAdd(&umka->types, &umka->blocks, typeKind);
-    type->base = baseType;
-    typeResizeArray(type, len.intVal);
+    typeSetBase(type, baseType);
+    typeAssertResizeArray(&umka->types, type, len.intVal);
     return type;
-}
-
-
-// strType = "str".
-static const Type *parseStrType(Umka *umka)
-{
-    lexEat(&umka->lex, TOK_STR);
-    return umka->strType;
 }
 
 
@@ -338,7 +324,7 @@ static void parseEnumItem(Umka *umka, Type *type, Const *constant)
         lexEat(&umka->lex, TOK_EQ);
         const Type *rightType = NULL;
         parseExpr(umka, &rightType, constant);
-        typeAssertCompatible(&umka->types, umka->intType, rightType);
+        typeAssertCompatible(&umka->types, umka->types.predecl.intType, rightType);
     }
 
     if (typeOverflow(type->kind, *constant))
@@ -349,16 +335,16 @@ static void parseEnumItem(Umka *umka, Type *type, Const *constant)
 
 
 // enumType = "enum" ["(" type ")"] "{" {enumItem ";"} "}"
-static const Type *parseEnumType(Umka *umka)
+static const Type *parseEnumType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_ENUM);
 
-    const Type *baseType = umka->intType;
+    const Type *baseType = umka->types.predecl.intType;
     if (umka->lex.tok.kind == TOK_LPAR)
     {
         lexNext(&umka->lex);
-        baseType = parseType(umka, NULL);
-        typeAssertCompatible(&umka->types, umka->intType, baseType);
+        baseType = parseTypeRecursive(umka, depth + 1);
+        typeAssertCompatible(&umka->types, umka->types.predecl.intType, baseType);
         lexEat(&umka->lex, TOK_RPAR);
     }
 
@@ -384,14 +370,14 @@ static const Type *parseEnumType(Umka *umka)
 
 
 // mapType = "map" "[" type "]" type.
-static const Type *parseMapType(Umka *umka)
+static const Type *parseMapType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_MAP);
     lexEat(&umka->lex, TOK_LBRACKET);
 
     Type *type = typeAdd(&umka->types, &umka->blocks, TYPE_MAP);
 
-    const Type *keyType = parseType(umka, NULL);
+    const Type *keyType = parseTypeRecursive(umka, depth + 1);
     if (!typeValidOperator(keyType, TOK_EQEQ))
         umka->error.handler(umka->error.context, "Map key type is not comparable");
 
@@ -399,7 +385,7 @@ static const Type *parseMapType(Umka *umka)
 
     lexEat(&umka->lex, TOK_RBRACKET);
 
-    const Type *itemType = parseTypeOrForwardType(umka);
+    const Type *itemType = parseTypeOrForwardType(umka, false, depth + 1);
     if (itemType->kind == TYPE_VOID)
         umka->error.handler(umka->error.context, "Map items cannot be void");
 
@@ -409,20 +395,20 @@ static const Type *parseMapType(Umka *umka)
     Type *nodeType = typeAdd(&umka->types, &umka->blocks, TYPE_STRUCT);
     const Type *ptrNodeType = typeAddPtrTo(&umka->types, &umka->blocks, nodeType);
 
-    typeAddField(&umka->types, nodeType, umka->intType, "#len");
-    typeAddField(&umka->types, nodeType, umka->intType, "#priority");
-    typeAddField(&umka->types, nodeType, ptrKeyType,    "#key");
-    typeAddField(&umka->types, nodeType, ptrItemType,   "#data");
-    typeAddField(&umka->types, nodeType, ptrNodeType,   "#left");
-    typeAddField(&umka->types, nodeType, ptrNodeType,   "#right");
+    typeAddField(&umka->types, nodeType, umka->types.predecl.intType, "#len");
+    typeAddField(&umka->types, nodeType, umka->types.predecl.intType, "#priority");
+    typeAddField(&umka->types, nodeType, ptrKeyType,                  "#key");
+    typeAddField(&umka->types, nodeType, ptrItemType,                 "#data");
+    typeAddField(&umka->types, nodeType, ptrNodeType,                 "#left");
+    typeAddField(&umka->types, nodeType, ptrNodeType,                 "#right");
 
-    type->base = nodeType;
+    typeSetBase(type, nodeType);
     return type;
 }
 
 
 // structType = "struct" "{" {typedIdentList ";"} "}"
-static const Type *parseStructType(Umka *umka)
+static const Type *parseStructType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_STRUCT);
     lexEat(&umka->lex, TOK_LBRACE);
@@ -435,7 +421,7 @@ static const Type *parseStructType(Umka *umka)
         bool fieldExported[MAX_IDENTS_IN_LIST];
         const Type *fieldType = NULL;
         int numFields = 0;
-        parseTypedIdentList(umka, fieldNames, fieldExported, MAX_IDENTS_IN_LIST, &numFields, &fieldType, false);
+        parseTypedIdentList(umka, fieldNames, fieldExported, MAX_IDENTS_IN_LIST, &numFields, &fieldType, depth);
 
         for (int i = 0; i < numFields; i++)
         {
@@ -452,7 +438,7 @@ static const Type *parseStructType(Umka *umka)
 
 
 // interfaceType = "interface" "{" {(ident signature | qualIdent) ";"} "}"
-static const Type *parseInterfaceType(Umka *umka)
+static const Type *parseInterfaceType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_INTERFACE);
     lexEat(&umka->lex, TOK_LBRACE);
@@ -460,8 +446,8 @@ static const Type *parseInterfaceType(Umka *umka)
     Type *type = typeAdd(&umka->types, &umka->blocks, TYPE_INTERFACE);
 
     // The interface type is the Umka equivalent of Interface + methods
-    typeAddField(&umka->types, type, umka->ptrVoidType, "#self");
-    typeAddField(&umka->types, type, umka->ptrVoidType, "#selftype");
+    typeAddField(&umka->types, type, umka->types.predecl.ptrVoidType, "#self");
+    typeAddField(&umka->types, type, umka->types.predecl.ptrVoidType, "#selftype");
 
     // Method names and signatures, or embedded interfaces
     while (umka->lex.tok.kind == TOK_IDENT)
@@ -477,18 +463,18 @@ static const Type *parseInterfaceType(Umka *umka)
             lexNext(&umka->lex);
 
             Type *methodType = typeAdd(&umka->types, &umka->blocks, TYPE_FN);
-            methodType->sig.isMethod = true;
+            methodType->sig->isMethod = true;
+            methodType->sig->isInterfaceMethod = true;
 
-            typeAddParam(&umka->types, &methodType->sig, umka->ptrVoidType, "#self", (Const){0});
-            parseSignature(umka, &methodType->sig);
+            typeAddParam(&umka->types, methodType->sig, umka->types.predecl.ptrVoidType, "#self", (Const){0});
+            parseSignature(umka, methodType->sig, depth);
 
-            const Field *method = typeAddField(&umka->types, type, methodType, methodName);
-            methodType->sig.offsetFromSelf = method->offset;
+            typeAddField(&umka->types, type, methodType, methodName);
         }
         else
         {
             // Embedded interface
-            const Type *embeddedType = parseType(umka, NULL);
+            const Type *embeddedType = parseTypeRecursive(umka, depth + 1);
 
             if (embeddedType->kind != TYPE_INTERFACE)
                 umka->error.handler(umka->error.context, "Interface type expected");
@@ -498,9 +484,7 @@ static const Type *parseInterfaceType(Umka *umka)
                 Type *methodType = typeAdd(&umka->types, &umka->blocks, TYPE_FN);
                 typeDeepCopy(&umka->storage, methodType, embeddedType->field[i]->type);
 
-                const Field *method = typeAddField(&umka->types, type, methodType, embeddedType->field[i]->name);
-                methodType->sig.isMethod = true;
-                methodType->sig.offsetFromSelf = method->offset;
+                typeAddField(&umka->types, type, methodType, embeddedType->field[i]->name);
             }
         }
 
@@ -512,7 +496,7 @@ static const Type *parseInterfaceType(Umka *umka)
 
 
 // closureType = "fn" signature.
-static const Type *parseClosureType(Umka *umka)
+static const Type *parseClosureType(Umka *umka, int depth)
 {
     lexEat(&umka->lex, TOK_FN);
 
@@ -520,42 +504,51 @@ static const Type *parseClosureType(Umka *umka)
 
     // Function field
     Type *fnType = typeAdd(&umka->types, &umka->blocks, TYPE_FN);
-    parseSignature(umka, &fnType->sig);
+    parseSignature(umka, fnType->sig, depth);
     typeAddField(&umka->types, type, fnType, "#fn");
 
     // Upvalues field
-    typeAddField(&umka->types, type, umka->anyType, "#upvalues");
+    typeAddField(&umka->types, type, umka->types.predecl.anyType, "#upvalues");
 
     return type;
 }
 
 
-// type = qualIdent | ptrType | arrayType | dynArrayType | strType | enumType | mapType | structType | interfaceType | closureType.
-const Type *parseType(Umka *umka, const Ident *ident)
+const Type *parseTypeIdent(Umka *umka, const Ident *ident)
 {
-    if (ident)
-    {
-        if (ident->kind != IDENT_TYPE)
-            umka->error.handler(umka->error.context, "Type expected");
-        lexNext(&umka->lex);
-        return ident->type;
-    }
+    if (!ident || ident->kind != IDENT_TYPE)
+        umka->error.handler(umka->error.context, "Type expected");
+    lexNext(&umka->lex);
+    return ident->type;
+}
+
+
+static const Type *parseTypeRecursive(Umka *umka, int depth)
+{
+    if (depth >= MAX_TYPE_NESTING)
+        umka->error.handler(umka->error.context, "Type nesting is too deep");
 
     switch (umka->lex.tok.kind)
     {
-        case TOK_IDENT:     return parseType(umka, parseQualIdent(umka));
+        case TOK_IDENT:     return parseTypeIdent(umka, parseQualIdent(umka));
         case TOK_CARET:
-        case TOK_WEAK:      return parsePtrType(umka);
-        case TOK_LBRACKET:  return parseArrayType(umka);
-        case TOK_STR:       return parseStrType(umka);
-        case TOK_ENUM:      return parseEnumType(umka);
-        case TOK_MAP:       return parseMapType(umka);
-        case TOK_STRUCT:    return parseStructType(umka);
-        case TOK_INTERFACE: return parseInterfaceType(umka);
-        case TOK_FN:        return parseClosureType(umka);
+        case TOK_WEAK:      return parsePtrType(umka, depth);
+        case TOK_LBRACKET:  return parseArrayType(umka, depth);
+        case TOK_ENUM:      return parseEnumType(umka, depth);
+        case TOK_MAP:       return parseMapType(umka, depth);
+        case TOK_STRUCT:    return parseStructType(umka, depth);
+        case TOK_INTERFACE: return parseInterfaceType(umka, depth);
+        case TOK_FN:        return parseClosureType(umka, depth);
 
         default:            umka->error.handler(umka->error.context, "Type expected"); return NULL;
     }
+}
+
+
+// type = qualIdent | ptrType | arrayType | dynArrayType | enumType | mapType | structType | interfaceType | closureType.
+const Type *parseType(Umka *umka)
+{
+    return parseTypeRecursive(umka, 0);
 }
 
 
@@ -571,7 +564,7 @@ static void parseTypeDeclItem(Umka *umka)
 
     lexEat(&umka->lex, TOK_EQ);
 
-    const Type *type = parseType(umka, NULL);
+    const Type *type = parseType(umka);
     Type *newType = typeAdd(&umka->types, &umka->blocks, type->kind);
     typeDeepCopy(&umka->storage, newType, type);
     newType->typeIdent = identAddType(&umka->idents, &umka->modules, &umka->blocks, name, newType, exported);
@@ -663,7 +656,7 @@ static void parseVarDeclItem(Umka *umka)
     bool varExported[MAX_IDENTS_IN_LIST];
     int numVars = 0;
     const Type *varType = NULL;
-    parseTypedIdentList(umka, varNames, varExported, MAX_IDENTS_IN_LIST, &numVars, &varType, false);
+    parseTypedIdentList(umka, varNames, varExported, MAX_IDENTS_IN_LIST, &numVars, &varType, 0);
 
     Ident *var[MAX_IDENTS_IN_LIST];
     for (int i = 0; i < numVars; i++)
@@ -752,16 +745,16 @@ static void parseFnDecl(Umka *umka)
     Type *fnType = typeAdd(&umka->types, &umka->blocks, TYPE_FN);
 
     if (umka->lex.tok.kind == TOK_LPAR)
-        parseRcvSignature(umka, &fnType->sig);
+        parseRcvSignature(umka, fnType->sig);
 
     lexCheck(&umka->lex, TOK_IDENT);
     IdentName name;
     strcpy(name, umka->lex.tok.name);
 
     // Check for method/field name collision
-    if (fnType->sig.isMethod)
+    if (fnType->sig->isMethod)
     {
-        const Type *rcvBaseType = fnType->sig.param[0]->type->base;
+        const Type *rcvBaseType = fnType->sig->param[0]->type->base;
 
         if (rcvBaseType->kind == TYPE_STRUCT && typeFindField(rcvBaseType, name, NULL))
             umka->error.handler(umka->error.context, "Structure already has field %s", name);
@@ -770,7 +763,7 @@ static void parseFnDecl(Umka *umka)
     lexNext(&umka->lex);
     bool exported = parseExportMark(umka);
 
-    parseSignature(umka, &fnType->sig);
+    parseSignature(umka, fnType->sig, 0);
 
     Const constant = {.intVal = umka->gen.ip};
     Ident *fn = identAddConst(&umka->idents, &umka->modules, &umka->blocks, name, fnType, exported, constant);
@@ -890,7 +883,7 @@ static void parseImportItem(Umka *umka)
          umka->modules.error->handler(umka->modules.error->context, "Duplicate imported module %s", path);
     *importAlias = alias;
 
-    identAddModule(&umka->idents, &umka->modules, &umka->blocks, alias, umka->voidType, importedModule);
+    identAddModule(&umka->idents, &umka->modules, &umka->blocks, alias, umka->types.predecl.voidType, importedModule);
 
     lexNext(&umka->lex);
 }

@@ -24,7 +24,6 @@ typedef enum
     TOK_IN,
     TOK_MAP,
     TOK_RETURN,
-    TOK_STR,
     TOK_STRUCT,
     TOK_SWITCH,
     TOK_TYPE,
@@ -101,11 +100,7 @@ typedef struct
     TokenKind kind;
     union
     {
-        struct
-        {
-            IdentName name;
-            unsigned int hash;
-        };
+        IdentName name;
         int64_t intVal;
         uint64_t uintVal;
         double realVal;
@@ -128,7 +123,7 @@ typedef struct
 } Lexer;
 
 
-int lexInit(Lexer *lex, Storage *storage, DebugInfo *debug, const char *fileName, const char *sourceString, bool trusted, Error *error);
+void lexInit(Lexer *lex, Storage *storage, DebugInfo *debug, const char *fileName, const char *sourceString, bool trusted, Error *error);
 void lexFree(Lexer *lex);
 void lexNext(Lexer *lex);
 void lexNextForcedSemicolon(Lexer *lex);

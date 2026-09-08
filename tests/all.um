@@ -7,12 +7,14 @@ import (
     "dynarrays3.um"
     "strings.um"
     "fibers.um"
+    "fibers2.um"
     "fnctools.um"
     "gc.um"
     "gc2.um"
     "interfaces.um"
     "interfaces2.um"
     "interfaces3.um"
+    "interfaces4.um"
     "maps.um"
     "maps2.um"
     "multret.um"
@@ -51,6 +53,7 @@ import (
     "sorting.um"
     "optim.um"
     "extlib.um"
+    "fuzz.um"
 )
 
 fn main() {
@@ -62,12 +65,14 @@ fn main() {
     printf("\n\n>>> Dynamic arrays - 3\n\n");       dynarrays3::test()
     printf("\n\n>>> Strings\n\n");                  strings::test()
     printf("\n\n>>> Fibers\n\n");                   fibers::test()
+    printf("\n\n>>> Fibers - 2\n\n");               fibers2::test()
     printf("\n\n>>> Functional tools\n\n");         fnctools::test()
     printf("\n\n>>> Garbage collection - 1\n\n");   gc::test()
     printf("\n\n>>> Garbage collection - 2\n\n");   gc2::test()
     printf("\n\n>>> Interfaces - 1\n\n");           interfaces::test()
     printf("\n\n>>> Interfaces - 2\n\n");           interfaces2::test()
     printf("\n\n>>> Interfaces - 3\n\n");           interfaces3::test()
+    printf("\n\n>>> Interfaces - 4\n\n");           interfaces4::test()    
     printf("\n\n>>> Maps - 1\n\n");                 maps::test()
     printf("\n\n>>> Maps - 2\n\n");                 maps2::test()
     printf("\n\n>>> Multiple returns\n\n");         multret::test()
@@ -106,4 +111,5 @@ fn main() {
     printf("\n\n>>> Sorting\n\n");                  sorting::test()
     printf("\n\n>>> Peephole optimizations\n\n");   optim::test()
     printf("\n\n>>> External libraries\n\n");       extlib::test()
+    printf("\n\n>>> Fuzz\n\n");                     fuzz::test()
 }

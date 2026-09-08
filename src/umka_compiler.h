@@ -8,7 +8,6 @@
 #include "umka_gen.h"
 #include "umka_ident.h"
 #include "umka_const.h"
-#include "umka_runtime.h"
 #include "umka_api.h"
 
 
@@ -31,21 +30,6 @@ typedef struct tagUmka
     DebugInfo   debug;
     Error       error;
 
-    // Pointers to built-in types
-    const Type
-         *voidType,
-         *nullType,
-         *int8Type,  *int16Type,  *int32Type,  *intType,
-         *uint8Type, *uint16Type, *uint32Type, *uintType,
-         *boolType,
-         *charType,
-         *real32Type, *realType,
-         *strType,
-         *fiberType,
-         *ptrVoidType, *ptrNullType,
-         *anyType,
-         *fileType;
-
     // main() context
     UmkaFuncContext mainFn;
     
@@ -54,7 +38,6 @@ typedef struct tagUmka
 
     // Original codepages (Windows only)
     unsigned int originalInputCodepage, originalOutputCodepage;
-
 } Umka;
 
 
@@ -65,7 +48,7 @@ void compilerRun                (Umka *umka);
 void compilerCall               (Umka *umka, UmkaFuncContext *fn);
 char *compilerAsm               (Umka *umka);
 bool compilerAddModule          (Umka *umka, const char *fileName, const char *sourceString);
-bool compilerAddFunc            (Umka *umka, const char *name, UmkaExternFunc func);
+bool compilerAddClosure         (Umka *umka, const char *name, UmkaExternFunc func, void *upvalue);
 bool compilerGetFunc            (Umka *umka, const char *moduleName, const char *funcName, UmkaFuncContext *fn);
 void compilerMakeFuncContext    (Umka *umka, const Type *fnType, int entryOffset, UmkaFuncContext *fn);
 

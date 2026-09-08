@@ -31,7 +31,6 @@ static const char *spelling [] =
     "in",
     "map",
     "return",
-    "str",
     "struct",
     "switch",
     "type",
@@ -106,15 +105,8 @@ enum
 };
 
 
-static unsigned int keywordHash[NUM_KEYWORDS];
-
-
-int lexInit(Lexer *lex, Storage *storage, DebugInfo *debug, const char *fileName, const char *sourceString, bool trusted, Error *error)
+void lexInit(Lexer *lex, Storage *storage, DebugInfo *debug, const char *fileName, const char *sourceString, bool trusted, Error *error)
 {
-    // Fill keyword hashes
-    for (int i = 0; i < NUM_KEYWORDS; i++)
-        keywordHash[i] = hash(spelling[TOK_BREAK + i]);
-
     // Initialize lexer
     errno = 0;
 
@@ -169,8 +161,6 @@ int lexInit(Lexer *lex, Storage *storage, DebugInfo *debug, const char *fileName
     lex->debug->fileName = lex->fileName;
     lex->debug->fnName = "<unknown>";
     lex->debug->line = lex->line;
-
-    return bufLen;
 }
 
 
@@ -266,20 +256,22 @@ static void lexSingleLineComment(Lexer *lex)
 static void lexMultiLineComment(Lexer *lex)
 {
     unsigned char ch = lexChar(lex);
-    bool asteriskFound = false;
 
-    while (ch && !(ch == '/' && asteriskFound))
+    while (ch)
     {
-        asteriskFound = false;
-
-        while (ch && ch != '*')
+        if (ch == '*')
+        {
             ch = lexChar(lex);
-
-        if (ch == '*') asteriskFound = true;
+            if (ch == '/')
+                break;
+        }
         ch = lexChar(lex);
     }
 
-    ch = lexChar(lex);
+    if (!ch)
+        lex->error->handler(lex->error->context, "Unterminated comment");
+
+    lexChar(lex);
 }
 
 
@@ -333,11 +325,10 @@ static void lexKeywordOrIdent(Lexer *lex)
               (ch >= '0' && ch <= '9') ||  ch == '_'));
 
     lex->tok.name[len] = 0;
-    lex->tok.hash = hash(lex->tok.name);
 
     // Search for a keyword
     for (int i = 0; i < NUM_KEYWORDS; i++)
-        if (lex->tok.hash == keywordHash[i] && strcmp(lex->tok.name, spelling[TOK_BREAK + i]) == 0)
+        if (strcmp(lex->tok.name, spelling[TOK_BREAK + i]) == 0)
         {
             lex->tok.kind = TOK_BREAK + i;
             break;
@@ -810,8 +801,11 @@ static int lexSingleLineStrLiteralAndGetSize(Lexer *lex)
 
     while (ch != '\"' || escaped)
     {
-        if (ch == 0 || (ch == '\n' && !escaped))
+        if ((ch == 0 || ch == '\n') && !escaped)
             lex->error->handler(lex->error->context, "Unterminated string");
+
+        if (ch == 0)
+            lex->error->handler(lex->error->context, "Illegal character in string");
 
         if (lex->tok.strVal)
             lex->tok.strVal[size] = ch;
@@ -920,7 +914,6 @@ void lexNext(Lexer *lex)
             if (lex->prevTok.kind == TOK_BREAK       ||
                 lex->prevTok.kind == TOK_CONTINUE    ||
                 lex->prevTok.kind == TOK_RETURN      ||
-                lex->prevTok.kind == TOK_STR         ||
                 lex->prevTok.kind == TOK_PLUSPLUS    ||
                 lex->prevTok.kind == TOK_MINUSMINUS  ||
                 lex->prevTok.kind == TOK_RPAR        ||

@@ -226,6 +226,17 @@ void constUnary(const Consts *consts, Const *arg, TokenKind op, const Type *type
             default:        consts->error->handler(consts->error->context, "Illegal operator");
         }
     }
+    else if (type->kind == TYPE_UINT)
+    {
+        switch (op)
+        {
+            case TOK_PLUS:  break;
+            case TOK_MINUS: arg->intVal  = -arg->uintVal; break;
+            case TOK_XOR:   arg->uintVal = ~arg->uintVal; break;
+
+            default:        consts->error->handler(consts->error->context, "Illegal operator");
+        }
+    }
     else
     {
         switch (op)
@@ -420,8 +431,8 @@ void constCallBuiltin(const Consts *consts, Const *arg, const Const *arg2, TypeK
 {
     switch (builtinVal)
     {
-        case BUILTIN_REAL:
-        case BUILTIN_REAL_LHS:
+        case BUILTIN_MAKEREAL:
+        case BUILTIN_MAKEREALLEFT:
         {
             if (argTypeKind == TYPE_UINT)
                 arg->realVal = arg->uintVal;
@@ -466,7 +477,8 @@ void constCallBuiltin(const Consts *consts, Const *arg, const Const *arg2, TypeK
             arg->realVal = log(arg->realVal);
             break;
         }
-        case BUILTIN_LEN:       arg->intVal  = strlen((char *)arg->ptrVal); break;
+        case BUILTIN_LEN:       arg->intVal = arg->ptrVal ? getStrDims((char *)arg->ptrVal)->len      : 0; break;
+        case BUILTIN_CAP:       arg->intVal = arg->ptrVal ? getStrDims((char *)arg->ptrVal)->capacity : 0; break;
 
         default: consts->error->handler(consts->error->context, "Illegal function");
     }
